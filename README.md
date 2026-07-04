@@ -193,79 +193,49 @@ SYS_SIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)' ./scripts/build
 
 ### Option 2: Homebrew Cask Deployment (notarized DMG + Tap)
 
-For fully automated deployment to a custom Homebrew Tap, use the
-`deploy_brew.sh` script. It compiles, signs, notarizes, packages a DMG,
-notarizes the DMG, and generates the Ruby Cask file — all in one command.
-**No Xcode or xcodebuild required** — it uses `swiftc` directly.
+The Cask lives at `Casks/mickyhq-sysmon.rb`. Homebrew only discovers Casks
+from this top-level `Casks/` directory.
 
-**1. Set your credentials:**
+**1. Build a distribution DMG:**
 
 ```bash
-export SYS_APPLE_ID="you@example.com"
-export SYS_APPLE_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # app-specific password
-export SYS_TEAM_ID="ABCDEF1234"
 export SYS_SIGN_IDENTITY="Developer ID Application: Your Name (ABCDEF1234)"
+./scripts/build_from_source.sh
 ```
 
-**2. Run the deployment:**
+Notarize and staple `build/sysmon-latest.dmg` before publishing it.
+
+**2. Create the release and update the Cask:**
+
+```bash
+./scripts/release_tap.sh 1.0 build/sysmon-latest.dmg
+./scripts/generate_cask.sh build/sysmon-latest.dmg 1.0
+```
+
+Commit and push the updated Cask:
+
+```bash
+git add Casks/mickyhq-sysmon.rb
+git commit -m "Update mickyhq-sysmon to v1.0"
+git push origin main
+```
+
+**3. Verify the published Tap:**
 
 ```bash
 ./scripts/deploy_brew.sh
 ```
 
-The script will:
-1. Pre-flight: verify tools, credentials, keychain identity
-2. Compile the main app and widget extension with `swiftc`
-3. Assemble the `.app` bundle (Info.plist, icons, entitlements)
-4. Sign with `--options runtime --timestamp` for hardened runtime
-5. Notarize the `.app` via `xcrun notarytool --wait` and staple
-6. Package into `build/sysmon.dmg` (UDZO compressed, zlib level 9)
-7. Notarize the `.dmg` and staple the ticket
-8. Compute SHA-256 and write the Ruby Cask to `dist/sysmon.rb`
-9. Copy the versioned DMG to `dist/sysmon-<version>.dmg`
-
-Output files:
-| File | Location |
-|------|----------|
-| Notarized DMG | `dist/sysmon-<version>.dmg` |
-| Homebrew Cask | `dist/sysmon.rb` |
-
-**3. Set up the Homebrew Tap repository:**
-
-Create a public GitHub repository named `homebrew-sysmon`:
-
-```
-https://github.com/YOUR_GITHUB_USER/homebrew-sysmon
-```
-
-Clone it, add the generated Cask, create a release with the DMG:
+Users install with:
 
 ```bash
-git clone git@github.com:YOUR_GITHUB_USER/homebrew-sysmon.git
-cd homebrew-sysmon
-mkdir -p Casks
-cp /path/to/sysmon/dist/sysmon.rb Casks/sysmon.rb
-
-# Attach the DMG as a GitHub Release asset
-gh release create v1.0.0 /path/to/sysmon/dist/sysmon-1.0.0.dmg \
-  --title "sysmon v1.0.0"
-
-git add Casks/sysmon.rb
-git commit -m "Add sysmon v1.0.0"
-git push origin main
-```
-
-**4. Install via Homebrew:**
-
-```bash
-brew tap YOUR_GITHUB_USER/sysmon
-brew install --cask sysmon
+brew install --cask mickyhq/sysmon/mickyhq-sysmon
 ```
 
 To uninstall cleanly (the Cask's `zap trash:` section removes all app data):
 
 ```bash
-brew uninstall --cask --zap sysmon
+brew uninstall --cask --zap mickyhq-sysmon
 ```
 
 The `zap trash:` directives clean:
@@ -341,7 +311,7 @@ sysmon/
 │   └── sysmonWidget.entitlements
 └── scripts/
     ├── build_from_source.sh          # Standalone CLI build (no Xcode required)
-    ├── deploy_brew.sh                # Full notarize + DMG + Homebrew Cask deployer
+    ├── deploy_brew.sh                # Published Homebrew Cask verifier
     ├── generate_cask.sh              # DMG → Cask generator (for Homebrew Tap)
     ├── release.sh                    # GitHub Release creator (main repo)
     └── release_tap.sh                # DMG uploader (Tap repo releases)

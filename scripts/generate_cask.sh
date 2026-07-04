@@ -4,7 +4,7 @@
 # ==============================================================================
 #  Takes an already-built, notarized sysmon.dmg and produces:
 #    - SHA-256 checksum
-#    - sysmon.rb   (Homebrew Cask, ready to commit to your Tap repo)
+#    - mickyhq-sysmon.rb   (Homebrew Cask, ready to commit to your Tap repo)
 #
 #  No compilation, signing, or notarization is performed. This script
 #  assumes the DMG is already production-ready.
@@ -25,9 +25,9 @@
 #
 #   Optional environment variables:
 #
-#     SYS_GITHUB_USER="yourusername"   # defaults to "YOUR_GITHUB_USERNAME"
+#     SYS_GITHUB_USER="yourusername"   # defaults to "mickyhq"
 #     SYS_BUNDLE_ID="com.sysmon.app"   # bundle identifier for zap paths
-#     SYS_OUTPUT_DIR="./dist"          # where sysmon.rb is written
+#     SYS_OUTPUT_DIR="./Casks"         # where mickyhq-sysmon.rb is written
 #
 # ==============================================================================
 #  HOME-BREW TAP REPOSITORY STRUCTURE
@@ -37,17 +37,16 @@
 #
 #    homebrew-sysmon/
 #    └── Casks/
-#        └── sysmon.rb    <-- this generated file
+#        └── mickyhq-sysmon.rb    <-- this generated file
 #
-#  Place sysmon.rb inside the Casks/ directory, commit, and push.
+#  Place mickyhq-sysmon.rb inside the Casks/ directory, commit, and push.
 #  Users then install with:
 #
-#    brew tap YOUR_GITHUB_USERNAME/sysmon
-#    brew install --cask sysmon
+#    brew install --cask mickyhq/sysmon/mickyhq-sysmon
 #
 #  The DMG must be uploaded as a GitHub Release asset in the Tap repo:
 #
-#    https://github.com/YOUR_GITHUB_USERNAME/homebrew-sysmon/releases
+#    https://github.com/mickyhq/homebrew-sysmon/releases
 #
 #  The Cask's url field points to that release asset.
 # ==============================================================================
@@ -59,8 +58,8 @@ APP_NAME="sysmon"
 BUNDLE_ID="${SYS_BUNDLE_ID:-com.sysmon.app}"
 WIDGET_BUNDLE_ID="${BUNDLE_ID}.widget"
 APP_GROUP="${SYS_APP_GROUP:-group.com.sysmon.shared}"
-GITHUB_USER="${SYS_GITHUB_USER:-YOUR_GITHUB_USERNAME}"
-OUTPUT_DIR="${SYS_OUTPUT_DIR:-dist}"
+GITHUB_USER="${SYS_GITHUB_USER:-mickyhq}"
+OUTPUT_DIR="${SYS_OUTPUT_DIR:-Casks}"
 VERSION="${2:-}"   # optional second positional argument
 
 # ---------- Paths ----------
@@ -198,23 +197,23 @@ compute_sha256() {
 # ==============================================================================
 
 generate_cask() {
-    log_step "Generating Homebrew Cask: sysmon.rb..."
+    log_step "Generating Homebrew Cask: mickyhq-sysmon.rb..."
 
     mkdir -p "$OUTPUT_DIR"
-    local CASK_FILE="$OUTPUT_DIR/sysmon.rb"
+    local CASK_FILE="$OUTPUT_DIR/mickyhq-sysmon.rb"
 
     cat > "$CASK_FILE" << 'RUBY_EOF'
-cask "sysmon" do
+cask "mickyhq-sysmon" do
   version "%VERSION%"
   sha256 "%SHA256%"
 
-  url "https://github.com/%GITHUB_USER%/homebrew-sysmon/releases/download/v#{version}/sysmon-%VERSION%.dmg",
+  url "https://github.com/%GITHUB_USER%/homebrew-sysmon/releases/download/v#{version}/sysmon-#{version}.dmg",
       verified: "github.com/%GITHUB_USER%/homebrew-sysmon/"
   name "sysmon"
-  desc "Lightweight macOS menu bar system monitor with WidgetKit CPU/Memory widget"
-  homepage "https://github.com/%GITHUB_USER%/sysmon"
+  desc "Lightweight menu bar system monitor with WidgetKit CPU/Memory widget"
+  homepage "https://github.com/%GITHUB_USER%/homebrew-sysmon"
 
-  # depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
 
   app "sysmon.app"
 
@@ -252,7 +251,7 @@ RUBY_EOF
 # ==============================================================================
 
 print_summary() {
-    local CASK_FILE="$OUTPUT_DIR/sysmon.rb"
+    local CASK_FILE="$OUTPUT_DIR/mickyhq-sysmon.rb"
 
     echo ""
     echo "============================================================================="
@@ -285,7 +284,7 @@ print_summary() {
     echo ""
     echo "  3. Create the required directory and copy the Cask:"
     echo "     mkdir -p Casks"
-    echo "     cp ${CASK_FILE} Casks/sysmon.rb"
+    echo "     cp ${CASK_FILE} Casks/mickyhq-sysmon.rb"
     echo ""
     echo "  4. Upload the DMG as a GitHub Release asset (IMPORTANT):"
     echo "     cd homebrew-sysmon"
@@ -297,23 +296,23 @@ print_summary() {
     echo "     Attach file:  ${DMG_PATH}"
     echo ""
     echo "  5. Commit and push the Cask:"
-    echo "     git add Casks/sysmon.rb"
+    echo "     git add Casks/mickyhq-sysmon.rb"
     echo "     git commit -m \"Add sysmon v${VERSION}\""
     echo "     git push origin main"
     echo ""
     echo "  6. Users install with:"
     echo "     brew tap ${GITHUB_USER}/sysmon"
-    echo "     brew install --cask sysmon"
+    echo "     brew install --cask ${GITHUB_USER}/sysmon/mickyhq-sysmon"
     echo ""
     echo "     Or to uninstall completely (zaps all app data):"
-    echo "     brew uninstall --cask --zap sysmon"
+    echo "     brew uninstall --cask --zap mickyhq-sysmon"
     echo ""
     echo "  REPOSITORY LAYOUT"
     echo "  ================="
     echo ""
     echo "  homebrew-sysmon/          ← GitHub repository ${GITHUB_USER}/homebrew-sysmon"
     echo "  ├── Casks/"
-    echo "  │   └── sysmon.rb         ← The generated Cask (place it here)"
+    echo "  │   └── mickyhq-sysmon.rb ← The generated Cask (place it here)"
     echo "  └── README.md             ← Optional"
     echo ""
     echo "  Releases (on GitHub, not in the repo itself):"
