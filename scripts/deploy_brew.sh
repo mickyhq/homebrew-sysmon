@@ -1,29 +1,32 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  sysmon — Homebrew Cask Deployment Script
+#  sysmon — Homebrew Cask Deployment Script (swiftc / no Xcode required)
 # ==============================================================================
-#  This script automates the complete macOS deployment pipeline:
+#  This script automates the complete macOS deployment pipeline using only the
+#  Xcode Command Line Tools (swiftc, xcrun, codesign). No Xcode GUI or
+#  xcodebuild needed.
 #
-#    1. Build & Archive   — xcodebuild archive (Release)
-#    2. Extract .app      — export from archive
-#    3. Code Sign         — Developer ID Application certificate
-#    4. Notarize .app     — Apple Notary service, staple ticket
-#    5. Package DMG       — hdiutil (UDZO read-only compressed)
-#    6. Notarize DMG      — Notarize + staple the final .dmg
-#    7. Homebrew Cask     — Print the Ruby Cask block + SHA-256
+#    1. Compile .app       — swiftc (main app + WidgetKit extension)
+#    2. Assemble bundle    — Info.plist, PlugIns, icons, entitlements
+#    3. Code Sign          — Developer ID Application certificate
+#    4. Notarize .app      — Apple Notary service, staple ticket
+#    5. Package DMG        — hdiutil (UDZO read-only compressed)
+#    6. Notarize DMG       — Notarize + staple the final .dmg
+#    7. Homebrew Cask      — Generate the Ruby Cask block + SHA-256
 #
 # ==============================================================================
 #  PREREQUISITES
 # ==============================================================================
 #
-#   1. Xcode 15+ with command-line tools installed.
+#   1. macOS 13+ with Xcode Command Line Tools.
+#      Install: xcode-select --install
 #
 #   2. A valid Apple Developer ID Application certificate in your keychain.
-#      Verify with: security find-identity -v -p basic | grep "Developer ID"
+#      Verify: security find-identity -v -p basic | grep "Developer ID"
 #
-#   3. An App-Specific Password for notarization (generate at appleid.apple.com).
+#   3. An App-Specific Password for notarization (appleid.apple.com).
 #
-#   4. Required environment variables (set before running):
+#   4. Required environment variables:
 #
 #        export SYS_APPLE_ID="you@example.com"
 #        export SYS_APPLE_PASSWORD="abcd-efgh-ijkl-mnop"
@@ -32,11 +35,9 @@
 #
 #   5. Optional overrides:
 #
-#        export SYS_VERSION="1.2.3"          # auto-detected if not set
+#        export SYS_VERSION="1.2.3"        # auto-detected from Info.plist
 #        export SYS_BUNDLE_ID="com.sysmon.app"
-#        export SYS_PROJECT="sysmon.xcodeproj"
-#        export SYS_SCHEME="sysmon"
-#        export SYS_OUTPUT_DIR="./dist"       # where .dmg and .rb are written
+#        export SYS_OUTPUT_DIR="./dist"    # where .dmg and .rb are written
 #
 # ==============================================================================
 #  USAGE
@@ -59,11 +60,8 @@ BUNDLE_ID="${SYS_BUNDLE_ID:-com.sysmon.app}"
 WIDGET_BUNDLE_ID="${BUNDLE_ID}.widget"
 APP_GROUP="${SYS_APP_GROUP:-group.com.sysmon.shared}"
 VERSION="${SYS_VERSION:-}"
-PROJECT="${SYS_PROJECT:-sysmon.xcodeproj}"
-SCHEME="${SYS_SCHEME:-sysmon}"
-DERIVED_DATA="${SYS_DERIVED_DATA:-build/DerivedData}"
 OUTPUT_DIR="${SYS_OUTPUT_DIR:-dist}"
-ARCHIVE_PATH="${SYS_ARCHIVE_PATH:-build/sysmon.xcarchive}"
+MIN_VERSION="13.0"
 
 # Sensitive credentials (must be set in environment)
 APPLE_ID="${SYS_APPLE_ID:-}"
@@ -75,6 +73,10 @@ SIGN_IDENTITY="${SYS_SIGN_IDENTITY:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+BUILD_DIR="$PROJECT_DIR/build"
+APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
+WIDGET_BUNDLE="$APP_BUNDLE/Contents/PlugIns/$WIDGET_NAME.appex"
+DMG_PATH="$BUILD_DIR/sysmon.dmg"
 
 # ---------- Colors ----------
 RED='\033[0;31m'
@@ -88,14 +90,16 @@ log_info() { echo -e "${CYAN}[INFO]${NC}   $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC}   $1"; }
 log_err()  { echo -e "${RED}[ERROR]${NC}  $1" >&2; }
 
-# ==================== PRE-FLIGHT CHECKS ====================
+# ==============================================================================
+#  1. PRE-FLIGHT CHECKS
+# ==============================================================================
 
 preflight() {
     log_step "Running pre-flight checks..."
 
     # --- Required tools ---
     local missing=()
-    for tool in xcodebuild xcrun codesign hdiutil security plutil; do
+    for tool in swiftc xcrun codesign hdiutil security plutil sips iconutil; do
         if ! command -v "$tool" &>/dev/null; then
             missing+=("$tool")
         fi
@@ -107,36 +111,14 @@ preflight() {
     fi
     log_info "All required tools found."
 
-    # --- Xcode project ---
-    if [ ! -d "$PROJECT_DIR/$PROJECT" ] && [ ! -f "$PROJECT_DIR/$PROJECT/contents.xcworkspacedata" ]; then
-        # The project may be a .xcodeproj directory or the scheme may be autodiscovered
-        if [ ! -d "$PROJECT_DIR/$PROJECT" ]; then
-            log_warn "Xcode project not found at $PROJECT_DIR/$PROJECT"
-            log_warn "Attempting workspace / scheme autodiscovery..."
-            # Try to find any .xcworkspace or .xcodeproj
-            local found
-            found=$(find "$PROJECT_DIR" -maxdepth 1 -name "*.xcodeproj" -o -name "*.xcworkspace" 2>/dev/null | head -1)
-            if [ -z "$found" ]; then
-                log_err "No Xcode project or workspace found in $PROJECT_DIR."
-                log_err "Set SYS_PROJECT and SYS_SCHEME environment variables."
-                exit 1
-            fi
-            PROJECT="$(basename "$found")"
-            log_info "Auto-detected project: $PROJECT"
-        fi
-    fi
-
     # --- Detect version ---
     if [ -z "$VERSION" ]; then
-        # Try Info.plist first
         if [ -f "$PROJECT_DIR/sysmon/Info.plist" ]; then
             VERSION=$(plutil -extract CFBundleShortVersionString raw "$PROJECT_DIR/sysmon/Info.plist" 2>/dev/null || true)
         fi
-        # Fallback to CHANGELOG.md
         if [ -z "$VERSION" ] && [ -f "$PROJECT_DIR/CHANGELOG.md" ]; then
             VERSION=$(grep -m1 '^## \[' "$PROJECT_DIR/CHANGELOG.md" | sed 's/## \[\(.*\)\].*/\1/' || true)
         fi
-        # Hard fallback
         if [ -z "$VERSION" ]; then
             VERSION="1.0.0"
             log_warn "Could not detect version. Defaulting to $VERSION"
@@ -172,112 +154,183 @@ preflight() {
     log_info "Signing identity verified: $SIGN_IDENTITY"
 
     # --- Create output directories ---
-    mkdir -p "$OUTPUT_DIR" "build"
+    mkdir -p "$OUTPUT_DIR" "$BUILD_DIR"
+
+    # --- SDK paths ---
+    SDK_PATH="$(xcrun --show-sdk-path --sdk macosx)"
+    FRAMEWORKS="$SDK_PATH/System/Library/Frameworks"
+    SWIFT_MODULES="$SDK_PATH/usr/lib/swift"
+    log_info "SDK: $SDK_PATH"
 
     log_step "Pre-flight checks passed."
 }
 
-# ==================== 1. BUILD & ARCHIVE ====================
+# ==============================================================================
+#  2. COMPILE APP + WIDGET (swiftc)
+# ==============================================================================
 
-build_archive() {
-    log_step "Building and archiving with xcodebuild..."
+compile_app() {
+    log_step "Compiling main app executable (swiftc)..."
 
-    # Clean derived data for a fresh build
-    log_info "Cleaning derived data..."
-    rm -rf "$DERIVED_DATA"
+    local EXE_DIR="$APP_BUNDLE/Contents/MacOS"
+    mkdir -p "$EXE_DIR"
 
-    # Clean build folder
-    log_info "Cleaning build folder..."
-    xcodebuild clean \
-        -project "$PROJECT_DIR/$PROJECT" \
-        -scheme "$SCHEME" \
-        -configuration Release \
-        >/dev/null 2>&1 || {
-            log_warn "xcodebuild clean returned non-zero; continuing..."
-        }
+    local SHARED="$PROJECT_DIR/Shared"
+    local MAIN="$PROJECT_DIR/sysmon"
 
-    # Archive
-    log_info "Archiving ($SCHEME, Release)..."
-    xcodebuild archive \
-        -project "$PROJECT_DIR/$PROJECT" \
-        -scheme "$SCHEME" \
-        -configuration Release \
-        -derivedDataPath "$DERIVED_DATA" \
-        -archivePath "$ARCHIVE_PATH" \
-        CODE_SIGN_STYLE=Manual \
-        CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
-        DEVELOPMENT_TEAM="$TEAM_ID" \
-        OTHER_CODE_SIGN_FLAGS="--options runtime --timestamp" \
-        | sed 's/^/  /' || {
-            log_err "Archive failed. Check the xcodebuild output above."
+    swiftc \
+        -sdk "$SDK_PATH" \
+        -target "arm64-apple-macos$MIN_VERSION" \
+        -F "$FRAMEWORKS" \
+        -I "$SWIFT_MODULES" \
+        -module-name "$APP_NAME" \
+        -parse-as-library \
+        -O \
+        -framework SwiftUI \
+        -framework AppKit \
+        \
+        "$SHARED/SystemMonitorData.swift" \
+        "$SHARED/SystemMonitorEngine.swift" \
+        "$SHARED/AppGroupStore.swift" \
+        "$MAIN/MenuBarViewModel.swift" \
+        "$MAIN/MenuBarLabelView.swift" \
+        "$MAIN/StatsDetailView.swift" \
+        "$MAIN/StatusBarController.swift" \
+        "$MAIN/sysmonApp.swift" \
+        \
+        -o "$EXE_DIR/$APP_NAME" || {
+            log_err "Main app compilation failed."
             exit 1
         }
 
-    log_step "Archive created: $ARCHIVE_PATH"
+    log_info "Main executable compiled: $EXE_DIR/$APP_NAME"
 }
 
-# ==================== 2. EXTRACT .APP ====================
+compile_widget() {
+    log_step "Compiling Widget extension (swiftc)..."
 
-extract_app() {
-    log_step "Extracting .app from archive..."
+    local EXE_DIR="$WIDGET_BUNDLE/Contents/MacOS"
+    mkdir -p "$EXE_DIR"
 
-    local EXPORT_PLIST="$PROJECT_DIR/build/exportOptions.plist"
-    local EXPORT_DIR="$PROJECT_DIR/build/exported"
+    local SHARED="$PROJECT_DIR/Shared"
+    local WIDGET="$PROJECT_DIR/sysmonWidget"
 
-    # Create a minimal exportOptions.plist for Developer ID export
-    cat > "$EXPORT_PLIST" << EOF
+    swiftc \
+        -sdk "$SDK_PATH" \
+        -target "arm64-apple-macos$MIN_VERSION" \
+        -F "$FRAMEWORKS" \
+        -I "$SWIFT_MODULES" \
+        -module-name "$WIDGET_NAME" \
+        -parse-as-library \
+        -O \
+        -framework SwiftUI \
+        -framework WidgetKit \
+        -framework AppKit \
+        \
+        "$SHARED/SystemMonitorData.swift" \
+        "$SHARED/AppGroupStore.swift" \
+        "$WIDGET/SystemStatsWidgetView.swift" \
+        "$WIDGET/sysmonWidget.swift" \
+        \
+        -o "$EXE_DIR/$WIDGET_NAME" || {
+            log_err "Widget compilation failed."
+            exit 1
+        }
+
+    log_info "Widget executable compiled: $EXE_DIR/$WIDGET_NAME"
+}
+
+# ==============================================================================
+#  3. ASSEMBLE BUNDLE (Info.plist, icons, entitlements)
+# ==============================================================================
+
+create_app_icon() {
+    log_step "Creating app icon..."
+
+    local SOURCE_ICON="$PROJECT_DIR/images/sysmon.png"
+    local ICONSET="$BUILD_DIR/sysmon.iconset"
+    local RESOURCES="$APP_BUNDLE/Contents/Resources"
+
+    mkdir -p "$ICONSET" "$RESOURCES"
+
+    sips -z 16 16 "$SOURCE_ICON" --out "$ICONSET/icon_16x16.png" >/dev/null
+    sips -z 32 32 "$SOURCE_ICON" --out "$ICONSET/icon_16x16@2x.png" >/dev/null
+    sips -z 32 32 "$SOURCE_ICON" --out "$ICONSET/icon_32x32.png" >/dev/null
+    sips -z 64 64 "$SOURCE_ICON" --out "$ICONSET/icon_32x32@2x.png" >/dev/null
+    sips -z 128 128 "$SOURCE_ICON" --out "$ICONSET/icon_128x128.png" >/dev/null
+    sips -z 256 256 "$SOURCE_ICON" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+    sips -z 256 256 "$SOURCE_ICON" --out "$ICONSET/icon_256x256.png" >/dev/null
+    sips -z 512 512 "$SOURCE_ICON" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+    sips -z 512 512 "$SOURCE_ICON" --out "$ICONSET/icon_512x512.png" >/dev/null
+    cp "$SOURCE_ICON" "$ICONSET/icon_512x512@2x.png"
+
+    iconutil -c icns "$ICONSET" -o "$RESOURCES/sysmon.icns"
+    rm -rf "$ICONSET"
+
+    log_info "App icon created: $RESOURCES/sysmon.icns"
+}
+
+create_app_plist() {
+    log_step "Creating Info.plist files..."
+
+    # Main app Info.plist
+    local PLIST="$APP_BUNDLE/Contents/Info.plist"
+    cat > "$PLIST" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>method</key>
-    <string>developer-id</string>
-    <key>teamID</key>
-    <string>$TEAM_ID</string>
-    <key>signingStyle</key>
-    <string>manual</string>
-    <key>signingCertificate</key>
-    <string>Developer ID Application</string>
-    <key>stripSwiftSymbols</key>
-    <true/>
+    <key>CFBundleDevelopmentRegion</key>       <string>en</string>
+    <key>CFBundleDisplayName</key>             <string>$APP_NAME</string>
+    <key>CFBundleExecutable</key>              <string>$APP_NAME</string>
+    <key>CFBundleIdentifier</key>              <string>$BUNDLE_ID</string>
+    <key>CFBundleInfoDictionaryVersion</key>   <string>6.0</string>
+    <key>CFBundleName</key>                    <string>$APP_NAME</string>
+    <key>CFBundlePackageType</key>             <string>APPL</string>
+    <key>CFBundleIconFile</key>                <string>sysmon.icns</string>
+    <key>CFBundleShortVersionString</key>      <string>$VERSION</string>
+    <key>CFBundleVersion</key>                 <string>$VERSION</string>
+    <key>LSMinimumSystemVersion</key>          <string>$MIN_VERSION</string>
+    <key>LSUIElement</key>                     <true/>
 </dict>
 </plist>
 EOF
 
-    log_info "Exporting with exportOptions.plist (developer-id method)..."
-    xcodebuild -exportArchive \
-        -archivePath "$ARCHIVE_PATH" \
-        -exportPath "$EXPORT_DIR" \
-        -exportOptionsPlist "$EXPORT_PLIST" \
-        | sed 's/^/  /' || {
-            log_err "Export failed."
-            exit 1
-        }
+    # Widget Info.plist
+    local WPLIST="$WIDGET_BUNDLE/Contents/Info.plist"
+    mkdir -p "$(dirname "$WPLIST")"
+    cat > "$WPLIST" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>       <string>en</string>
+    <key>CFBundleDisplayName</key>             <string>$WIDGET_NAME</string>
+    <key>CFBundleExecutable</key>              <string>$WIDGET_NAME</string>
+    <key>CFBundleIdentifier</key>              <string>$WIDGET_BUNDLE_ID</string>
+    <key>CFBundleInfoDictionaryVersion</key>   <string>6.0</string>
+    <key>CFBundleName</key>                    <string>$WIDGET_NAME</string>
+    <key>CFBundlePackageType</key>             <string>XPC!</string>
+    <key>CFBundleShortVersionString</key>      <string>$VERSION</string>
+    <key>CFBundleVersion</key>                 <string>$VERSION</string>
+    <key>LSMinimumSystemVersion</key>          <string>$MIN_VERSION</string>
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionPointIdentifier</key>
+        <string>com.apple.widgetkit-extension</string>
+    </dict>
+</dict>
+</plist>
+EOF
 
-    APP_BUNDLE="$EXPORT_DIR/$APP_NAME.app"
-    if [ ! -d "$APP_BUNDLE" ]; then
-        log_err "Exported .app not found at: $APP_BUNDLE"
-        exit 1
-    fi
-
-    log_step "App extracted: $APP_BUNDLE"
+    log_info "Info.plist files created."
 }
 
-# ==================== 3. CODE SIGN ====================
+create_entitlements() {
+    log_step "Generating entitlements..."
 
-sign_app() {
-    log_step "Signing application bundle..."
-
-    local ENTITLEMENTS_APP="$PROJECT_DIR/sysmon/sysmon.entitlements"
-    local ENTITLEMENTS_WIDGET="$PROJECT_DIR/sysmonWidget/sysmonWidget.entitlements"
-    local WIDGET_PLUGIN="$APP_BUNDLE/Contents/PlugIns/$WIDGET_NAME.appex"
-
-    # If entitlements files don't exist (e.g., after xcodebuild they are embedded),
-    # create a minimal one for re-signing
-    if [ ! -f "$ENTITLEMENTS_APP" ]; then
-        ENTITLEMENTS_APP="$PROJECT_DIR/build/sysmon.entitlements"
-        mkdir -p "$PROJECT_DIR/build"
-        cat > "$ENTITLEMENTS_APP" << EOF
+    local APP_ENT="$BUILD_DIR/sysmon.entitlements"
+    cat > "$APP_ENT" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -288,7 +341,9 @@ sign_app() {
 </dict>
 </plist>
 EOF
-        cat > "$PROJECT_DIR/build/sysmonWidget.entitlements" << EOF
+
+    local WIDGET_ENT="$BUILD_DIR/sysmonWidget.entitlements"
+    cat > "$WIDGET_ENT" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -299,33 +354,42 @@ EOF
 </dict>
 </plist>
 EOF
-        ENTITLEMENTS_WIDGET="$PROJECT_DIR/build/sysmonWidget.entitlements"
-    fi
+
+    log_info "Entitlements created in $BUILD_DIR"
+}
+
+# ==============================================================================
+#  4. CODE SIGN
+# ==============================================================================
+
+sign_bundles() {
+    log_step "Signing application bundles..."
+
+    local ENT_APP="$BUILD_DIR/sysmon.entitlements"
+    local ENT_WIDGET="$BUILD_DIR/sysmonWidget.entitlements"
+    local CODESIGN_OPTS="--force --deep --options runtime --timestamp"
 
     # Sign widget extension first (innermost must be signed first)
-    if [ -d "$WIDGET_PLUGIN" ]; then
-        log_info "Signing Widget extension..."
-        codesign --force --deep --options runtime --timestamp \
-            --entitlements "$ENTITLEMENTS_WIDGET" \
-            --sign "$SIGN_IDENTITY" \
-            "$WIDGET_PLUGIN" || {
-                log_err "Widget signing failed."
-                exit 1
-            }
-        log_info "Widget signed."
-    else
-        log_warn "Widget extension not found at $WIDGET_PLUGIN — skipping widget signing."
-    fi
+    log_info "Signing widget extension..."
+    codesign $CODESIGN_OPTS \
+        --entitlements "$ENT_WIDGET" \
+        --sign "$SIGN_IDENTITY" \
+        "$WIDGET_BUNDLE" || {
+            log_err "Widget signing failed."
+            exit 1
+        }
+    log_info "Widget signed."
 
     # Sign main app
     log_info "Signing main app..."
-    codesign --force --deep --options runtime --timestamp \
-        --entitlements "$ENTITLEMENTS_APP" \
+    codesign $CODESIGN_OPTS \
+        --entitlements "$ENT_APP" \
         --sign "$SIGN_IDENTITY" \
         "$APP_BUNDLE" || {
             log_err "App signing failed."
             exit 1
         }
+    log_info "App signed."
 
     # Verify
     log_info "Verifying code signature..."
@@ -336,18 +400,18 @@ EOF
     log_step "Code sign verified."
 }
 
-# ==================== 4. NOTARIZE .APP ====================
+# ==============================================================================
+#  5. NOTARIZE .APP
+# ==============================================================================
 
 notarize_app() {
     log_step "Notarizing application..."
 
-    local ZIP_PATH="$PROJECT_DIR/build/sysmon_notarize.zip"
+    local ZIP_PATH="$BUILD_DIR/sysmon_notarize.zip"
 
-    # Zip the app for notarization
     log_info "Compressing app for notarization submission..."
     ditto -c -k --keepParent "$APP_BUNDLE" "$ZIP_PATH"
 
-    # Submit
     log_info "Submitting to Apple Notary Service..."
     local SUBMIT_OUTPUT
     SUBMIT_OUTPUT=$(xcrun notarytool submit "$ZIP_PATH" \
@@ -366,38 +430,31 @@ notarize_app() {
     log_info "Notarization status: $STATUS"
 
     if [ "$STATUS" != "Accepted" ]; then
-        local REASON
-        REASON=$(echo "$SUBMIT_OUTPUT" | jq -r '.issues[]?.message // "No details available"' 2>/dev/null)
         log_err "Notarization was NOT accepted."
-        log_err "Reason: $REASON"
-        log_err "Full output:"
+        log_err "Raw output:"
         echo "$SUBMIT_OUTPUT" | jq . 2>/dev/null || echo "$SUBMIT_OUTPUT"
         exit 1
     fi
 
     log_info "Notarization accepted."
 
-    # Staple the ticket to the app
     log_info "Stapling notarization ticket to .app..."
     xcrun stapler staple "$APP_BUNDLE" || {
-        log_warn "Stapling .app failed (non-fatal). You may need to staple manually."
+        log_warn "Stapling .app failed (non-fatal)."
     }
 
-    # Clean up zip
     rm -f "$ZIP_PATH"
-
     log_step "App notarized and stapled."
 }
 
-# ==================== 5. CREATE DMG ====================
+# ==============================================================================
+#  6. CREATE DMG
+# ==============================================================================
 
 create_dmg() {
     log_step "Creating distribution DMG..."
 
-    local DMG_BUILD="$PROJECT_DIR/build/sysmon.dmg"
-
-    # Remove old DMG if present
-    rm -f "$DMG_BUILD"
+    rm -f "$DMG_PATH"
 
     log_info "Building DMG with hdiutil (UDZO format)..."
     hdiutil create \
@@ -406,20 +463,18 @@ create_dmg() {
         -volname "$APP_NAME" \
         -format UDZO \
         -imagekey zlib-level=9 \
-        "$DMG_BUILD" || {
+        "$DMG_PATH" || {
             log_err "hdiutil DMG creation failed."
             exit 1
         }
 
-    DMG_PATH="$DMG_BUILD"
     log_step "DMG created: $DMG_PATH"
-
-    local DMG_SIZE
-    DMG_SIZE=$(du -sh "$DMG_PATH" | cut -f1)
-    log_info "DMG size: $DMG_SIZE"
+    log_info "DMG size: $(du -sh "$DMG_PATH" | cut -f1)"
 }
 
-# ==================== 6. NOTARIZE DMG ====================
+# ==============================================================================
+#  7. NOTARIZE DMG
+# ==============================================================================
 
 notarize_dmg() {
     log_step "Notarizing DMG..."
@@ -442,18 +497,14 @@ notarize_dmg() {
     log_info "DMG notarization status: $STATUS"
 
     if [ "$STATUS" != "Accepted" ]; then
-        local REASON
-        REASON=$(echo "$SUBMIT_OUTPUT" | jq -r '.issues[]?.message // "No details available"' 2>/dev/null)
         log_err "DMG notarization was NOT accepted."
-        log_err "Reason: $REASON"
-        log_err "Full output:"
+        log_err "Raw output:"
         echo "$SUBMIT_OUTPUT" | jq . 2>/dev/null || echo "$SUBMIT_OUTPUT"
         exit 1
     fi
 
     log_info "DMG notarization accepted."
 
-    # Staple the ticket to the DMG
     log_info "Stapling notarization ticket to DMG..."
     xcrun stapler staple "$DMG_PATH" || {
         log_err "Stapling DMG failed."
@@ -463,25 +514,22 @@ notarize_dmg() {
     log_step "DMG notarized and stapled."
 }
 
-# ==================== 7. GENERATE HOMEBREW CASK ====================
+# ==============================================================================
+#  8. GENERATE HOMEBREW CASK
+# ==============================================================================
 
 generate_cask() {
     log_step "Generating Homebrew Cask..."
 
-    # Copy final DMG to output directory
-    local FINAL_DMG="$OUTPUT_DIR/sysmon-$VERSION.dmg"
+    local FINAL_DMG="$OUTPUT_DIR/sysmon-${VERSION}.dmg"
     cp "$DMG_PATH" "$FINAL_DMG"
     log_info "Final DMG copied to: $FINAL_DMG"
 
-    # Calculate SHA-256
     local SHA256
     SHA256=$(shasum -a 256 "$FINAL_DMG" | awk '{print $1}')
     log_info "SHA-256: $SHA256"
 
-    # Generate Cask file
     local CASK_FILE="$OUTPUT_DIR/sysmon.rb"
-    local YEAR
-    YEAR=$(date +%Y)
 
     cat > "$CASK_FILE" << RUBY_EOF
 cask "sysmon" do
@@ -539,19 +587,17 @@ RUBY_EOF
     echo "     https://github.com/new"
     echo "     Repository name: homebrew-sysmon"
     echo "     Description: Homebrew Tap for sysmon"
-    echo "     ☑ Public"
-    echo "     ☐ Add a README (optional)"
     echo ""
-    echo "  2. Clone and create a release:"
+    echo "  2. Clone it and add the Cask:"
     echo "     git clone git@github.com:YOUR_GITHUB_USER/homebrew-sysmon.git"
     echo "     cd homebrew-sysmon"
     echo "     mkdir -p Casks"
     echo "     cp ${CASK_FILE} Casks/sysmon.rb"
     echo ""
-    echo "  3. Create a GitHub Release in the Tap repo:"
+    echo "  3. Create a GitHub Release in the Tap repo with the DMG attached:"
     echo "     gh release create v${VERSION} ${FINAL_DMG} --title 'sysmon v${VERSION}'"
     echo ""
-    echo "  4. Commit and push the Cask:"
+    echo "  4. Commit & push the Cask:"
     echo "     git add Casks/sysmon.rb"
     echo "     git commit -m 'Add sysmon v${VERSION}'"
     echo "     git push origin main"
@@ -568,14 +614,17 @@ RUBY_EOF
 main() {
     echo ""
     echo "============================================================================="
-    echo "  sysmon — Homebrew Cask Deployer"
+    echo "  sysmon — Homebrew Cask Deployer (swiftc / no Xcode)"
     echo "============================================================================="
     echo ""
 
     preflight
-    build_archive
-    extract_app
-    sign_app
+    compile_app
+    compile_widget
+    create_app_icon
+    create_app_plist
+    create_entitlements
+    sign_bundles
     notarize_app
     create_dmg
     notarize_dmg
