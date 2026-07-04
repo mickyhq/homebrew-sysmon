@@ -1,6 +1,6 @@
 cask "sysmon" do
   version "1.0"
-  sha256 "174eb725a805b20d374efc0b5810e64383a8f7efa6362cf9f6dc97c2a90f5763"
+  sha256 "675d3c7ee5bfd5bd33cf03ad075b7f383d35dd7a7ff2ff402cd762f9d11d428f"
 
   url "https://github.com/mickyhq/homebrew-sysmon/releases/download/v#{version}/sysmon-1.0.dmg",
       verified: "github.com/mickyhq/homebrew-sysmon/"
