@@ -1,0 +1,1 @@
+Always generate new DMG file when finished adding new features and such.
