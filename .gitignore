@@ -3,7 +3,7 @@ build/
 *.app
 *.dmg
 *.xcarchive
-
+dist/
 # Xcode user data
 xcuserdata/
 *.xcuserdata
