@@ -47,64 +47,17 @@ SYS_SIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)' ./scripts/build
 
 ### Build approach
 
-This project supports **two** build paths:
-
-| Path | Command | Requires Xcode GUI? |
-|------|---------|---------------------|
-| **Standalone CLI** (recommended) | `./scripts/build_from_source.sh` | No — only Command Line Tools |
-| Xcode project (IDE) | Open `.xcodeproj` → Archive | Yes |
-
-The standalone script uses `swiftc` directly to compile, assemble, sign,
-and package a complete `.app` bundle with its `.appex` widget extension
-embedded inside `Contents/PlugIns/`.
-
-### Xcode Project Structure (if using the IDE)
+sysmon is built with `swiftc` directly — no Xcode GUI or `xcodebuild` required.
 
 ```
-sysmon.xcodeproj
-├── sysmon (Main App Target)
-│   ├── sysmonApp.swift
-│   ├── MenuBarViewModel.swift
-│   ├── MenuBarLabelView.swift
-│   ├── StatsDetailView.swift
-│   ├── Info.plist
-│   └── sysmon.entitlements
-│
-├── sysmonWidget (Widget Extension Target)
-│   ├── sysmonWidget.swift
-│   ├── SystemStatsWidgetView.swift
-│   ├── Info.plist
-│   └── sysmonWidget.entitlements
-│
-└── Shared (Folder reference, added to both targets)
-    ├── SystemMonitorData.swift
-    ├── SystemMonitorEngine.swift
-    └── AppGroupStore.swift
+./scripts/build_from_source.sh
 ```
 
-### Step-by-step Xcode Configuration
+The script compiles the main app and WidgetKit extension, assembles the
+`.app` bundle (including `Contents/PlugIns/` for the widget), generates
+entitlements, code-signs, and packages a DMG — all from a single command.
 
-1. **Create a new macOS project** → App template, SwiftUI interface,
-   Language: Swift 5, Minimum Deployment: **macOS 13.0**.
-
-2. **Add Widget Extension target**:
-   - `File → New → Target → macOS → Widget Extension`
-   - Name it `sysmonWidget`
-   - Deselect "Include Configuration App Intent" (not needed here)
-   - Delete the auto-generated `sysmonWidget.swift` and replace with ours
-
-3. **Add Shared folder**:
-   - Right-click the project root in the Navigator → `Add Files to "sysmon"…`
-   - Select the `Shared/` folder
-   - In the destination sheet, check **both** targets:
-     - ✅ sysmon
-     - ✅ sysmonWidget
-
-4. **Delete auto-generated `ContentView.swift`** from the main target (we
-   do not show a window).
-
-5. **Set `LSUIElement = YES`** in the main target's Info.plist so the app
-   does not appear in the Dock. (Already set in our `Info.plist`.)
+Requirements: macOS 13+ and Xcode Command Line Tools (`xcode-select --install`).
 
 ### Entitlements & App Groups
 
@@ -115,17 +68,10 @@ the code is:
 group.com.sysmon.shared
 ```
 
-**Using the standalone build script:** Entitlements are auto-generated into
-`build/` at build time. No manual configuration needed.
-
-**Using Xcode:**
-1. Main target → `Signing & Capabilities` → `+` → **App Groups**
-   - Add `group.com.sysmon.shared`
-2. Widget Extension target → `Signing & Capabilities` → `+` → **App Groups**
-   - Add `group.com.sysmon.shared`
-
-The `.entitlements` files in this repository already contain these entries.
-If you change the App Group ID, update `AppGroupStore.swift` accordingly.
+Entitlements are auto-generated into `build/` at build time. No manual
+configuration needed. The `.entitlements` files in this repository contain
+the required keys. If you change the App Group ID, update
+`AppGroupStore.swift` accordingly.
 
 ### Sandbox Compatibility
 
@@ -332,29 +278,6 @@ The `zap trash:` directives clean:
 - `~/Library/Preferences/com.sysmon.app.plist`
 - `~/Library/Saved Application State/com.sysmon.app.savedState`
 
-### Option 3: Xcode archive (alternative)
-
-```
-Product → Scheme → Edit Scheme → Archive → Release
-Product → Archive
-```
-
-Or via command line:
-
-```bash
-xcodebuild archive \
-  -project sysmon.xcodeproj \
-  -scheme sysmon \
-  -configuration Release \
-  -archivePath build/sysmon.xcarchive
-```
-
-Then run the archive-based packaging script:
-
-```bash
-./scripts/build_dmg.sh build/sysmon.xcarchive
-```
-
 ### Notarize & Staple (manual)
 
 ```bash
@@ -391,25 +314,6 @@ The full release pipeline from source to GitHub is two commands:
 ./scripts/release.sh 1.0.0        # tag → release → upload
 ```
 
-### Critical Xcode Settings for Mac App Store
-
-Configure these **before** your first archive to avoid painful refactoring:
-
-| Setting                          | Main Target (sysmon)                | Widget Extension (sysmonWidget)      |
-|----------------------------------|-------------------------------------|--------------------------------------|
-| **Bundle Identifier**            | `com.yourcompany.sysmon`            | `com.yourcompany.sysmon.widget`      |
-| **Team**                         | Your Apple Developer Team           | Same team (inherits, auto-selected)  |
-| **Signing Certificate**          | "Apple Development" (debug) / "Apple Distribution" (release) | Same |
-| **Deployment Target**            | macOS 13.0                          | macOS 13.0                           |
-| **App Category** (App Store)     | Utilities                           | (inherits from parent)               |
-| **App Sandbox**                  | YES                                 | YES                                  |
-| **App Groups**                   | `group.com.sysmon.shared`           | `group.com.sysmon.shared`            |
-| **Hardened Runtime**             | YES (required for notarization)     | YES (required)                       |
-
-**Important**: The Widget Extension's Bundle ID **must** start with the main
-app's Bundle ID. For example, if the main app is `com.foo.sysmon`, the
-widget must be `com.foo.sysmon.widget`.
-
 ---
 
 ## Directory Layout Reference
@@ -437,6 +341,7 @@ sysmon/
 │   └── sysmonWidget.entitlements
 └── scripts/
     ├── build_from_source.sh          # Standalone CLI build (no Xcode required)
-    ├── build_dmg.sh                  # Archive → DMG packaging (Xcode users)
     ├── deploy_brew.sh                # Full notarize + DMG + Homebrew Cask deployer
-    └── release.sh                    # GitHub Release creator
+    ├── generate_cask.sh              # DMG → Cask generator (for Homebrew Tap)
+    ├── release.sh                    # GitHub Release creator (main repo)
+    └── release_tap.sh                # DMG uploader (Tap repo releases)
