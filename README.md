@@ -25,6 +25,8 @@ submission and hardened notarization.
 
 **Output:** `build/sysmon-latest.dmg`
 
+**macOS Gatekeeper warning:** If macOS blocks the app with *"Apple could not verify sysmon is free of malware"*, see [Gatekeeper Workaround](#gatekeeper-workaround) below.
+
 For a distribution-signed build:
 
 ```bash
@@ -191,7 +193,50 @@ The script will:
 SYS_SIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)' ./scripts/build_from_source.sh
 ```
 
-### Option 2: Homebrew Cask Deployment (notarized DMG + Tap)
+### Option 2: Install via Homebrew (recommended for users)
+
+sysmon is distributed as a **Homebrew Cask** through a custom Tap.
+Run these three commands to find and install it:
+
+```bash
+brew tap mickyhq/sysmon
+brew trust mickyhq/sysmon
+brew search sysmon
+```
+
+**What these commands do:**
+
+| Command | Purpose |
+|---------|---------|
+| `brew tap mickyhq/sysmon` | Adds the sysmon Tap repository (`github.com/mickyhq/homebrew-sysmon`) to your local Homebrew installation so Homebrew can discover the Cask. |
+| `brew trust mickyhq/sysmon` | Marks the Tap as trusted. When a tap is trusted, Homebrew will install its formulae/casks without prompting for confirmation each time. This is safe for taps you control or trust. |
+| `brew search sysmon` | Searches all tapped repositories (including `mickyhq/sysmon`) for packages matching "sysmon". You should see `mickyhq/sysmon/mickyhq-sysmon` in the results. |
+
+**Install:**
+
+```bash
+brew install --cask mickyhq/sysmon/mickyhq-sysmon
+```
+
+**Uninstall** (the Cask's `zap trash:` section removes all app data):
+
+```bash
+brew uninstall --cask --zap mickyhq-sysmon
+```
+
+The `zap trash:` directives clean:
+- `~/Library/Application Scripts/group.com.sysmon.shared`
+- `~/Library/Application Support/sysmon`
+- `~/Library/Caches/com.sysmon.app`
+- `~/Library/Containers/com.sysmon.app`
+- `~/Library/Containers/com.sysmon.app.widget`
+- `~/Library/Group Containers/group.com.sysmon.shared`
+- `~/Library/HTTPStorages/com.sysmon.app`
+- `~/Library/Preferences/com.sysmon.app.plist`
+- `~/Library/Saved Application State/com.sysmon.app.savedState`
+- `~/Library/WebKit/com.sysmon.app`
+
+### Option 3: Homebrew Cask Deployment (for maintainers — building and publishing the Tap)
 
 The Cask lives at `Casks/mickyhq-sysmon.rb`. Homebrew only discovers Casks
 from this top-level `Casks/` directory.
@@ -204,6 +249,8 @@ export SYS_SIGN_IDENTITY="Developer ID Application: Your Name (ABCDEF1234)"
 ```
 
 Notarize and staple `build/sysmon-latest.dmg` before publishing it.
+The build script can handle notarization automatically if you set
+`SYS_NOTARY_KEYCHAIN_PROFILE` or `SYS_NOTARY_APPLE_ID` + `SYS_NOTARY_TEAM_ID`.
 
 **2. Create the release and update the Cask:**
 
@@ -225,28 +272,6 @@ git push origin main
 ```bash
 ./scripts/deploy_brew.sh
 ```
-
-Users install with:
-
-```bash
-brew install --cask mickyhq/sysmon/mickyhq-sysmon
-```
-
-To uninstall cleanly (the Cask's `zap trash:` section removes all app data):
-
-```bash
-brew uninstall --cask --zap mickyhq-sysmon
-```
-
-The `zap trash:` directives clean:
-- `~/Library/Application Scripts/group.com.sysmon.shared`
-- `~/Library/Application Support/sysmon`
-- `~/Library/Caches/com.sysmon.app`
-- `~/Library/Containers/com.sysmon.app`
-- `~/Library/Containers/com.sysmon.app.widget`
-- `~/Library/Group Containers/group.com.sysmon.shared`
-- `~/Library/Preferences/com.sysmon.app.plist`
-- `~/Library/Saved Application State/com.sysmon.app.savedState`
 
 ### Notarize & Staple (manual)
 
@@ -315,3 +340,112 @@ sysmon/
     ├── generate_cask.sh              # DMG → Cask generator (for Homebrew Tap)
     ├── release.sh                    # GitHub Release creator (main repo)
     └── release_tap.sh                # DMG uploader (Tap repo releases)
+
+---
+
+## Gatekeeper Workaround
+
+If you built sysmon locally without a paid Apple Developer account (ad-hoc
+signature), macOS Gatekeeper will block the app with:
+
+> *"sysmon" cannot be opened because Apple cannot verify it is free of malware.*
+
+This is expected — only Developer ID-signed + notarized apps pass Gatekeeper
+automatically. Use one of these methods to bypass it:
+
+### Method 1: System Settings (recommended)
+
+1. Open **System Settings → Privacy & Security**
+2. Scroll to the **Security** section at the bottom
+3. You will see: `"sysmon" was blocked to protect your Mac`
+4. Click **Open Anyway**
+5. Confirm by clicking **Open Anyway** in the popup
+
+### Method 2: Right-click open
+
+1. In Finder, navigate to `build/sysmon.app`
+2. **Right-click** (or Control-click) the app icon
+3. Select **Open** from the context menu
+4. Click **Open** in the dialog that appears
+
+This adds a one-time exception and you won't be prompted again.
+
+### Method 3: Remove quarantine attribute (terminal)
+
+```bash
+xattr -cr build/sysmon.app
+```
+
+This strips the `com.apple.quarantine` extended attribute that macOS attaches
+to downloaded files.
+
+### First-launch sandbox notification
+
+When you first launch sysmon (or after clearing its sandbox container), macOS
+may show:
+
+> *"Keeping app data separate makes it easier to manage your privacy and security."*
+
+This is **normal and expected** — it's macOS creating the sandbox container for
+the app. It only appears once per user account. Click **OK** to dismiss it.
+This happens because sysmon uses the App Sandbox entitlement, which is
+required for Mac App Store submission and provides defense-in-depth security.
+
+### Repeating "would like access data from other apps" prompt
+
+If the permission dialog keeps reappearing even after clicking **Allow**, the
+app's sandbox container may be in a bad state. This typically happens when
+running the app from outside `/Applications` (e.g., from the `build/`
+directory). To fix it:
+
+**Step 1 — Copy (not move) the app to `/Applications`:**
+
+```bash
+cp -R build/sysmon.app /Applications/sysmon.app
+xattr -cr /Applications/sysmon.app
+```
+
+**Step 2 — Reset sandbox containers via Finder (not Terminal):**
+
+The `~/Library/Containers` folder is protected by System Integrity Protection
+and requires Full Disk Access — using Finder is more reliable:
+
+1. Open **Finder** and press **⌘⇧G** (Go to Folder)
+2. Paste each of these paths one at a time and delete the folder:
+   - `~/Library/Containers/com.sysmon.app`
+   - `~/Library/Containers/com.sysmon.app.widget`
+   - `~/Library/Group Containers/group.com.sysmon.shared`
+
+   If a folder doesn't exist, skip it and move to the next.
+
+**Step 3 — Reset TCC permissions from Terminal:**
+
+This command works without extra permissions:
+
+```bash
+tccutil reset All com.sysmon.app
+```
+
+Then launch `/Applications/sysmon.app` — the prompt should appear only once
+and stay accepted after clicking **Allow**.
+
+> **If "Operation not permitted" occurs on `rm -rf`:** Terminal needs **Full Disk Access**
+> to delete sandbox containers. Grant it in **System Settings → Privacy & Security →
+> Full Disk Access** → add Terminal. Alternatively, use Finder as described in Step 2.
+
+### Why does Gatekeeper blocking happen?
+
+- **Ad-hoc signed builds** (the default when no `SYS_SIGN_IDENTITY` is set) are
+  not trusted by Gatekeeper.
+- **Developer ID signed + notarized builds** pass Gatekeeper without any
+  workaround. To produce one, you need a paid Apple Developer Program membership
+  ($99/year) and run:
+
+  ```bash
+  SYS_SIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)' \
+    SYS_NOTARY_KEYCHAIN_PROFILE=sysmon-notary \
+    ./scripts/build_from_source.sh
+  ```
+
+  See [Notarize & Staple](#notarize--staple-manual) for details on setting up
+  notarization credentials.

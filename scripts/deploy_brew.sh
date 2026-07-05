@@ -25,6 +25,14 @@ fi
 
 echo "Checking ${CASK_NAME}..."
 brew audit --cask --strict "$CASK_NAME"
+
+echo ""
+echo "Verifying discoverability..."
+echo "  brew search output:"
+brew search "$CASK_TOKEN" 2>&1 || true
+echo "  brew search ${TAP_NAME}/ output:"
+brew search "${TAP_NAME}/" 2>&1 || true
+
 brew info --cask "$CASK_NAME"
 
 echo ""
