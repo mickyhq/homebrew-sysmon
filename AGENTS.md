@@ -1,1 +1,1 @@
-Always generate new DMG file when finished adding new features and such.
+Generate new DMG file when finished adding new features and such. But don't do it, if you just updated docs.
