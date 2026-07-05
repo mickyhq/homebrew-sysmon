@@ -140,8 +140,13 @@ find_version() {
         return
     fi
 
-    # Try Info.plist
-    if [ -f "$PROJECT_DIR/sysmon/Info.plist" ]; then
+    # Try VERSION file (single source of truth)
+    if [ -f "$PROJECT_DIR/VERSION" ]; then
+        VERSION=$(head -1 "$PROJECT_DIR/VERSION" | tr -d '[:space:]')
+    fi
+
+    # Fallback to Info.plist
+    if [ -z "$VERSION" ] && [ -f "$PROJECT_DIR/sysmon/Info.plist" ]; then
         VERSION=$(plutil -extract CFBundleShortVersionString raw "$PROJECT_DIR/sysmon/Info.plist" 2>/dev/null || true)
     fi
 
@@ -214,21 +219,42 @@ cask "mickyhq-sysmon" do
   homepage "https://github.com/%GITHUB_USER%/homebrew-sysmon"
 
   depends_on macos: :ventura
+  depends_on arch: :arm64
+
+  auto_updates true
 
   app "sysmon.app"
 
-  zap trash: [
+  uninstall delete: [
     "~/Library/Application Scripts/%APP_GROUP%",
+    "~/Library/Group Containers/%APP_GROUP%",
+  ]
+
+  zap trash: [
     "~/Library/Application Support/%APP_NAME%",
     "~/Library/Caches/%BUNDLE_ID%",
     "~/Library/Containers/%BUNDLE_ID%",
     "~/Library/Containers/%WIDGET_BUNDLE_ID%",
-    "~/Library/Group Containers/%APP_GROUP%",
     "~/Library/HTTPStorages/%BUNDLE_ID%",
     "~/Library/Preferences/%BUNDLE_ID%.plist",
     "~/Library/Saved Application State/%BUNDLE_ID%.savedState",
     "~/Library/WebKit/%BUNDLE_ID%",
   ]
+
+  caveats <<~EOS
+    sysmon runs in the menu bar only — there is no Dock icon.
+    If the menu bar text doesn't appear, you may need to allow
+    sysmon in System Settings → Privacy & Security.
+
+    To add the CPU/Memory widget, open Notification Center and
+    click "Edit Widgets" at the bottom.
+  EOS
+
+  livecheck do
+    url "https://github.com/%GITHUB_USER%/homebrew-sysmon/releases.atom"
+    strategy :page_match
+    regex(%r{<id>.*/releases/tag/v?(\d+(?:\.\d+)+)</id>}i)
+  end
 end
 RUBY_EOF
 

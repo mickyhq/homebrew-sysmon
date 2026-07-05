@@ -1,0 +1,110 @@
+name: Build & Release
+
+# Triggered by pushing version tags (e.g., v1.0, v1.0.1)
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]*"
+
+# Only one release pipeline at a time
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    name: Build, Notarize & Release
+    runs-on: macos-14 # Apple Silicon runner
+
+    env:
+      SYS_SIGN_IDENTITY: ${{ secrets.SYS_SIGN_IDENTITY }}
+      SYS_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.SYS_NOTARY_KEYCHAIN_PROFILE || 'sysmon-notary' }}
+      SYS_TAP_REPO: ${{ secrets.SYS_TAP_REPO || 'mickyhq/homebrew-sysmon' }}
+      SYS_GITHUB_USER: ${{ secrets.SYS_GITHUB_USER || 'mickyhq' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building sysmon v${VERSION}"
+
+      - name: Build DMG
+        run: ./scripts/build_from_source.sh
+
+      - name: Notarize DMG
+        if: env.SYS_SIGN_IDENTITY != ''
+        env:
+          SYS_NOTARY_APPLE_ID: ${{ secrets.SYS_NOTARY_APPLE_ID }}
+          SYS_NOTARY_TEAM_ID: ${{ secrets.SYS_NOTARY_TEAM_ID }}
+          SYS_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.SYS_NOTARY_KEYCHAIN_PROFILE || 'sysmon-notary' }}
+        run: |
+          # Re-run the notarize step explicitly (in case build_from_source skipped it)
+          # The build script already handles this if env vars are set at build time
+          echo "Notarization handled by build script when SYS_NOTARY_KEYCHAIN_PROFILE or NOTARY_APPLE_ID is set."
+          # Verify stapling
+          if xcrun stapler validate build/sysmon-latest.dmg &>/dev/null; then
+            echo "DMG is stapled."
+          else
+            echo "::warning::DMG is not stapled — notarization may have been skipped."
+          fi
+
+      - name: Create GitHub Release (main repo)
+        run: ./scripts/release.sh "${{ steps.version.outputs.version }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Copy DMG for Tap release
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cp build/sysmon-latest.dmg /tmp/sysmon-${VERSION}.dmg
+
+      - name: Create GitHub Release (Tap repo)
+        env:
+          GH_TOKEN: ${{ secrets.TAP_REPO_TOKEN || github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAP_REPO="${{ env.SYS_TAP_REPO || 'mickyhq/homebrew-sysmon' }}"
+
+          gh release create "v${VERSION}" \
+            "/tmp/sysmon-${VERSION}.dmg" \
+            --repo "${TAP_REPO}" \
+            --title "sysmon v${VERSION}" \
+            --notes "sysmon v${VERSION} — Notarized DMG for Homebrew Cask installation." \
+            --prerelease=false
+
+      - name: Generate Cask
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ./scripts/generate_cask.sh build/sysmon-latest.dmg "$VERSION"
+          echo "Generated Cask:"
+          cat Casks/mickyhq-sysmon.rb
+
+      - name: Update Cask in Tap repo
+        env:
+          GH_TOKEN: ${{ secrets.TAP_REPO_TOKEN || github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          GITHUB_USER="${{ env.SYS_GITHUB_USER || 'mickyhq' }}"
+          TAP_REPO="${GITHUB_USER}/homebrew-sysmon"
+
+          # Clone the tap repo
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${TAP_REPO}.git" /tmp/tap-repo
+
+          # Copy the new Cask
+          cp Casks/mickyhq-sysmon.rb /tmp/tap-repo/Casks/mickyhq-sysmon.rb
+
+          # Commit and push
+          cd /tmp/tap-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add Casks/mickyhq-sysmon.rb
+          git commit -m "Update mickyhq-sysmon to v${VERSION}" || echo "No changes to commit"
+          git push origin main

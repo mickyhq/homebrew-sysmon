@@ -19,6 +19,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 # ---------- Configurable settings ----------
 APP_NAME="sysmon"
 WIDGET_NAME="sysmonWidget"
@@ -27,10 +30,20 @@ WIDGET_BUNDLE_ID="${BUNDLE_ID}.widget"
 APP_GROUP="group.com.sysmon.shared"
 SIGN_IDENTITY="${SYS_SIGN_IDENTITY:-}"   # e.g. "Developer ID Application: ..." or leave empty for ad-hoc
 MIN_VERSION="13.0"
-# -------------------------------------------
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Read version from VERSION file (single source of truth)
+VERSION_FILE="$PROJECT_DIR/VERSION"
+if [ -f "$VERSION_FILE" ]; then
+    VERSION="$(head -1 "$VERSION_FILE" | tr -d '[:space:]')"
+else
+    VERSION="1.0"
+fi
+
+# Notarization settings (optional)
+NOTARY_APPLE_ID="${SYS_NOTARY_APPLE_ID:-}"
+NOTARY_TEAM_ID="${SYS_NOTARY_TEAM_ID:-}"
+NOTARY_KEYCHAIN_PROFILE="${SYS_NOTARY_KEYCHAIN_PROFILE:-sysmon-notary}"
+# -------------------------------------------
 BUILD_DIR="$PROJECT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 WIDGET_BUNDLE="$APP_BUNDLE/Contents/PlugIns/$WIDGET_NAME.appex"
@@ -171,7 +184,7 @@ create_app_plist() {
     <key>CFBundleName</key>                    <string>$APP_NAME</string>
     <key>CFBundlePackageType</key>             <string>APPL</string>
     <key>CFBundleIconFile</key>                <string>sysmon.icns</string>
-    <key>CFBundleShortVersionString</key>      <string>1.0</string>
+    <key>CFBundleShortVersionString</key>      <string>$VERSION</string>
     <key>CFBundleVersion</key>                 <string>1</string>
     <key>LSMinimumSystemVersion</key>          <string>$MIN_VERSION</string>
     <key>LSUIElement</key>                     <true/>
@@ -197,7 +210,7 @@ create_widget_plist() {
     <key>CFBundleInfoDictionaryVersion</key>   <string>6.0</string>
     <key>CFBundleName</key>                    <string>$WIDGET_NAME</string>
     <key>CFBundlePackageType</key>             <string>XPC!</string>
-    <key>CFBundleShortVersionString</key>      <string>1.0</string>
+    <key>CFBundleShortVersionString</key>      <string>$VERSION</string>
     <key>CFBundleVersion</key>                 <string>1</string>
     <key>LSMinimumSystemVersion</key>          <string>$MIN_VERSION</string>
     <key>NSExtension</key>
@@ -295,6 +308,46 @@ package_dmg() {
     log_step "DMG created at: $DMG_PATH"
 }
 
+# ---------- Notarize and staple DMG ----------
+notarize_dmg() {
+    # Skip if not signing for distribution (ad-hoc)
+    if [ -z "$SIGN_IDENTITY" ]; then
+        log_info "Skipping notarization (ad-hoc signature)."
+        return
+    fi
+
+    # Skip if notary credentials not provided
+    if [ -z "$NOTARY_APPLE_ID" ] && [ -z "$NOTARY_TEAM_ID" ] && [ -z "$NOTARY_KEYCHAIN_PROFILE" ]; then
+        log_info "Skipping notarization (no credentials provided)."
+        log_info "Set SYS_NOTARY_APPLE_ID, SYS_NOTARY_TEAM_ID, or SYS_NOTARY_KEYCHAIN_PROFILE to enable."
+        return
+    fi
+
+    log_step "Submitting DMG for notarization..."
+
+    # Build notarytool args based on what's provided
+    local NOTARY_ARGS=("submit" "$DMG_PATH" "--wait")
+
+    if [ -n "$NOTARY_KEYCHAIN_PROFILE" ]; then
+        NOTARY_ARGS+=("--keychain-profile" "$NOTARY_KEYCHAIN_PROFILE")
+    elif [ -n "$NOTARY_APPLE_ID" ] && [ -n "$NOTARY_TEAM_ID" ]; then
+        NOTARY_ARGS+=("--apple-id" "$NOTARY_APPLE_ID" "--team-id" "$NOTARY_TEAM_ID")
+    fi
+
+    xcrun notarytool "${NOTARY_ARGS[@]}" 2>&1 || {
+        log_err "Notarization failed."
+        exit 1
+    }
+
+    log_step "Stapling notarization ticket to DMG..."
+    xcrun stapler staple "$DMG_PATH" 2>&1 || {
+        log_err "Stapling failed."
+        exit 1
+    }
+
+    log_step "Notarization complete. DMG is ready for distribution."
+}
+
 # ---------- Clean ----------
 clean() {
     log_step "Cleaning build directory..."
@@ -309,21 +362,32 @@ print_summary() {
     echo "  Build complete!"
     echo "==============================================="
     echo ""
+    echo "  Version:      $VERSION"
     echo "  App bundle:   $APP_BUNDLE"
     echo "  Widget:       $WIDGET_BUNDLE"
     echo "  DMG:          $DMG_PATH"
     echo ""
     if [ -n "$SIGN_IDENTITY" ]; then
         echo "  Signed with:  $SIGN_IDENTITY"
-        echo ""
-        echo "  Next — notarize the DMG:"
-        echo "    xcrun notarytool submit $DMG_PATH --apple-id \"your@email.com\" --team-id TEAMID --wait"
-        echo "    xcrun stapler staple $DMG_PATH"
+        if [ -n "$NOTARY_APPLE_ID" ] || [ -n "$NOTARY_KEYCHAIN_PROFILE" ]; then
+            echo "  Notarized:    yes (stapled)"
+        else
+            echo "  Notarized:    no"
+            echo ""
+            echo "  To notarize, rebuild with:"
+            echo "    SYS_NOTARY_KEYCHAIN_PROFILE=sysmon-notary ./scripts/build_from_source.sh"
+            echo ""
+            echo "  Or manually:"
+            echo "    xcrun notarytool submit $DMG_PATH --keychain-profile sysmon-notary --wait"
+            echo "    xcrun stapler staple $DMG_PATH"
+        fi
     else
         echo "  Signed with:  ad-hoc (testing only)"
         echo ""
         echo "  For distribution, rebuild with:"
-        echo "    SYS_SIGN_IDENTITY='Developer ID Application: ...' ./scripts/build_from_source.sh"
+        echo "    SYS_SIGN_IDENTITY='Developer ID Application: ...' \\"
+        echo "      SYS_NOTARY_KEYCHAIN_PROFILE=sysmon-notary \\"
+        echo "      ./scripts/build_from_source.sh"
     fi
     echo ""
 }
@@ -336,6 +400,7 @@ main() {
     echo "==============================================="
     echo ""
 
+    log_info "Building sysmon v$VERSION..."
     check_tools
     setup_sdk
     clean
@@ -347,6 +412,7 @@ main() {
     create_entitlements
     sign_bundles
     package_dmg
+    notarize_dmg
     print_summary
 }
 

@@ -9,19 +9,40 @@ cask "mickyhq-sysmon" do
   homepage "https://github.com/mickyhq/homebrew-sysmon"
 
   depends_on macos: :ventura
+  depends_on arch: :arm64
+
+  auto_updates true
 
   app "sysmon.app"
 
-  zap trash: [
+  uninstall delete: [
     "~/Library/Application Scripts/group.com.sysmon.shared",
+    "~/Library/Group Containers/group.com.sysmon.shared",
+  ]
+
+  zap trash: [
     "~/Library/Application Support/sysmon",
     "~/Library/Caches/com.sysmon.app",
     "~/Library/Containers/com.sysmon.app",
     "~/Library/Containers/com.sysmon.app.widget",
-    "~/Library/Group Containers/group.com.sysmon.shared",
     "~/Library/HTTPStorages/com.sysmon.app",
     "~/Library/Preferences/com.sysmon.app.plist",
     "~/Library/Saved Application State/com.sysmon.app.savedState",
     "~/Library/WebKit/com.sysmon.app",
   ]
+
+  caveats <<~EOS
+    sysmon runs in the menu bar only — there is no Dock icon.
+    If the menu bar text doesn't appear, you may need to allow
+    sysmon in System Settings → Privacy & Security.
+
+    To add the CPU/Memory widget, open Notification Center and
+    click "Edit Widgets" at the bottom.
+  EOS
+
+  livecheck do
+    url "https://github.com/mickyhq/homebrew-sysmon/releases.atom"
+    strategy :page_match
+    regex(%r{<id>.*/releases/tag/v?(\d+(?:\.\d+)+)</id>}i)
+  end
 end

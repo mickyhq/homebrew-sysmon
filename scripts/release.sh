@@ -25,12 +25,24 @@ log_step() { echo -e "${GREEN}[RELEASE]${NC} $1"; }
 log_info() { echo -e "${CYAN}[INFO]${NC}   $1"; }
 log_err()  { echo -e "${RED}[ERROR]${NC}  $1" >&2; }
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 # ---------- Pre-flight checks ----------
 VERSION="${1:-}"
+
+# Fall back to VERSION file (single source of truth) if no argument given
 if [ -z "$VERSION" ]; then
-    log_err "Usage: $0 <version>"
-    log_err "Example: $0 1.0.0"
-    exit 1
+    VERSION_FILE="$PROJECT_DIR/VERSION"
+    if [ -f "$VERSION_FILE" ]; then
+        VERSION="$(head -1 "$VERSION_FILE" | tr -d '[:space:]')"
+        log_info "Version auto-detected from VERSION file: $VERSION"
+    else
+        log_err "Usage: $0 <version>"
+        log_err "Example: $0 1.0.0"
+        log_err "Or create a VERSION file in the project root."
+        exit 1
+    fi
 fi
 
 if ! command -v gh &>/dev/null; then
@@ -43,9 +55,6 @@ if ! gh auth status &>/dev/null; then
     log_err "GitHub CLI not authenticated. Run: gh auth login"
     exit 1
 fi
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DMG_PATH="$PROJECT_DIR/build/sysmon-latest.dmg"
 
 if [ ! -f "$DMG_PATH" ]; then
